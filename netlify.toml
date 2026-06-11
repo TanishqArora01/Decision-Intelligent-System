@@ -1,0 +1,31 @@
+# ============================================================
+# Netlify configuration — Decision Intelligent System Frontend
+# Next.js 14 App Router with @netlify/plugin-nextjs
+# ============================================================
+
+[build]
+  base    = "fraud-detection hardened/frontend"
+  command = "npm install && npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION           = "18"
+  NPM_FLAGS              = "--legacy-peer-deps"
+  # Override in Netlify UI → Site Settings → Environment Variables:
+  NEXT_PUBLIC_API_URL    = "http://localhost:8400"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
+
+# Redirect bare domain to dashboard (Netlify-level redirect as fallback)
+[[redirects]]
+  from   = "/"
+  to     = "/dashboard"
+  status = 302
+
+# SPA-style fallback — Next.js handles its own routing, but keeps 404s clean
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+  force  = false
