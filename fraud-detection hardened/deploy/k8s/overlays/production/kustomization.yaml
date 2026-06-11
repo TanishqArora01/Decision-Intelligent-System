@@ -1,0 +1,71 @@
+# deploy/k8s/overlays/production/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fraud-detection
+
+resources:
+  - ../../base
+  - hpa.yaml
+
+commonLabels:
+  environment: production
+
+# Production: pin exact image SHA for reproducibility
+# Update these as part of the release process
+images:
+  - name: fraud-api-gateway
+    newTag: "1.0.0"
+  - name: fraud-app-backend
+    newTag: "1.0.0"
+  - name: fraud-frontend
+    newTag: "1.0.0"
+  - name: fraud-stage1
+    newTag: "1.0.0"
+  - name: fraud-stage2
+    newTag: "1.0.0"
+  - name: fraud-stage3
+    newTag: "1.0.0"
+  - name: fraud-feedback-service
+    newTag: "1.0.0"
+  - name: fraud-mlops-service
+    newTag: "1.0.0"
+
+# Production ConfigMap
+configMapGenerator:
+  - name: fraud-config
+    literals:
+      - cors_origins=https://portal.example.com,https://ops.example.com
+      - api_url=https://api.example.com
+      - environment=production
+
+# Production patches — higher replicas, stricter security
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api-gateway
+      spec:
+        replicas: 3
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: app-backend
+      spec:
+        replicas: 2
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+      spec:
+        replicas: 2
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stage1-service
+      spec:
+        replicas: 2

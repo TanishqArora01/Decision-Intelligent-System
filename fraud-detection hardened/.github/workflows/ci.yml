@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop, staging]
+  push:
+    branches: [develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 1: Lint
+  # ──────────────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (ruff + bandit + eslint)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Python linters
+        run: pip install ruff==0.4.4 bandit==1.7.9
+
+      - name: Set up Node 20 (for ESLint)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --prefix frontend
+
+      - name: Run lint
+        run: bash scripts/ci/lint.sh
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 2: Unit + offline integration tests
+  # ──────────────────────────────────────────────────────────────────────────
+  test:
+    name: Tests (pytest + integration-offline)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest==8.2.0 pytest-asyncio==0.23.7 \
+            numpy==1.26.4 pydantic==2.7.1
+
+      - name: Run tests
+        run: bash scripts/ci/test.sh
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 3: Docker Compose validation
+  # ──────────────────────────────────────────────────────────────────────────
+  compose-validate:
+    name: Compose validation
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11 (for YAML parsing)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml==6.0.1
+
+      - name: Validate compose file
+        run: bash scripts/ci/compose_validate.sh
+
+      - name: Validate overlay files
+        run: |
+          for f in deploy/compose/*.yml; do
+            echo "Validating $f..."
+            python3 -c "import yaml; yaml.safe_load(open('$f'))" && echo "  OK: $f"
+          done
+
+      - name: Check .env.example has no real secrets
+        run: |
+          for forbidden in "fraud_secret_2024" "admin2024!" "fraud_minio_2024"; do
+            if grep -r "$forbidden" .env.example 2>/dev/null; then
+              echo "ERROR: Real secret found in .env.example: $forbidden"
+              exit 1
+            fi
+          done
+          echo "✓ No real secrets in .env.example"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Job 4: TypeScript type check
+  # ──────────────────────────────────────────────────────────────────────────
+  typecheck:
+    name: TypeScript (tsc)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci --prefix frontend
+
+      - name: TypeScript check
+        run: npx --prefix frontend tsc --noEmit

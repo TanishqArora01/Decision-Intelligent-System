@@ -1,0 +1,39 @@
+# CODEOWNERS
+# Each line: pattern  @owner
+# Owners are notified for review on every PR touching these paths.
+# GitHub enforces approval before merge when branch protection is enabled.
+
+# Security — all changes require security team sign-off
+/security/                    @fraud-detection/security-team
+/.github/workflows/security.yml  @fraud-detection/security-team
+
+# Config — ops team reviews all configuration changes
+/config/                      @fraud-detection/ops-team
+/deploy/                      @fraud-detection/ops-team
+/docker-compose.yml           @fraud-detection/ops-team
+
+# Secrets template — any change to documented secrets requires review
+/config/secrets/              @fraud-detection/security-team @fraud-detection/ops-team
+/.env.example                 @fraud-detection/security-team
+
+# ML pipeline — ML team reviews model and pipeline changes
+/stage1-service/              @fraud-detection/ml-team
+/stage2-service/              @fraud-detection/ml-team
+/stage3-service/              @fraud-detection/ml-team
+/feature-engine/              @fraud-detection/ml-team
+/dags/                        @fraud-detection/ml-team
+/model-governance/            @fraud-detection/ml-team
+
+# App + auth — app team reviews UI and auth changes
+/app-backend/                 @fraud-detection/app-team
+/frontend/                    @fraud-detection/app-team
+/app-backend/auth/            @fraud-detection/security-team @fraud-detection/app-team
+
+# Data contracts — any change to Kafka schemas requires review from all teams
+/contracts/                   @fraud-detection/ml-team @fraud-detection/ops-team
+
+# CI — ops reviews all CI changes
+/.github/                     @fraud-detection/ops-team
+
+# Everything else — default owners
+*                             @fraud-detection/leads

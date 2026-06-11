@@ -1,0 +1,151 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feedback-service
+  labels:
+    app: feedback-service
+    app.kubernetes.io/component: feedback-loop
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: feedback-service
+  template:
+    metadata:
+      labels:
+        app: feedback-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9110"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1011
+      containers:
+        - name: feedback-service
+          image: fraud-feedback-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8500
+              name: http
+            - containerPort: 9110
+              name: metrics
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: redpanda:9092
+            - name: REDIS_HOST
+              value: redis
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-db-secrets
+                  key: postgres_password
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8500
+            initialDelaySeconds: 20
+            periodSeconds:       15
+          resources:
+            requests:
+              cpu:    250m
+              memory: 256Mi
+            limits:
+              cpu:    "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: feedback-service
+spec:
+  selector:
+    app: feedback-service
+  ports:
+    - name: http
+      port: 8500
+      targetPort: 8500
+    - name: metrics
+      port: 9110
+      targetPort: 9110
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlops-service
+  labels:
+    app: mlops-service
+    app.kubernetes.io/component: mlops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlops-service
+  template:
+    metadata:
+      labels:
+        app: mlops-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1013
+      containers:
+        - name: mlops-service
+          image: fraud-mlops-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8700
+              name: http
+            - containerPort: 9111
+              name: metrics
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: redpanda:9092
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow:5000
+            - name: AIRFLOW_API_URL
+              value: http://airflow-webserver:8080/api/v1
+            - name: AIRFLOW_USER
+              value: admin
+            - name: AIRFLOW_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-airflow-secrets
+                  key: admin_password
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8700
+            initialDelaySeconds: 20
+            periodSeconds:       15
+          resources:
+            requests:
+              cpu:    100m
+              memory: 256Mi
+            limits:
+              cpu:    "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlops-service
+spec:
+  selector:
+    app: mlops-service
+  ports:
+    - name: http
+      port: 8700
+      targetPort: 8700
+  type: ClusterIP

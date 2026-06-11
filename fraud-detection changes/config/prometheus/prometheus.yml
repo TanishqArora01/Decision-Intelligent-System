@@ -1,0 +1,150 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: fraud-detection-dev
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []   # configure alertmanager when ready
+
+scrape_configs:
+
+  # ---------------------------------------------------------------------------
+  # Core ML Pipeline Services
+  # ---------------------------------------------------------------------------
+
+  - job_name: api-gateway
+    static_configs:
+      - targets: [api-gateway:9106]
+    metrics_path: /metrics
+
+  - job_name: stage1-fast-risk
+    static_configs:
+      - targets: [stage1-service:9103]
+    metrics_path: /metrics
+
+  - job_name: stage2-deep-intel
+    static_configs:
+      - targets: [stage2-service:9104]
+    metrics_path: /metrics
+
+  - job_name: stage3-decision-engine
+    static_configs:
+      - targets: [stage3-service:9105]
+    metrics_path: /metrics
+
+  - job_name: feature-engine
+    static_configs:
+      - targets: [feature-engine:9102]
+    metrics_path: /metrics
+
+  - job_name: generator
+    static_configs:
+      - targets: [generator:9101]
+    metrics_path: /metrics
+
+  - job_name: decision-sink
+    static_configs:
+      - targets: [decision-sink:9107]
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # Application Layer
+  # ---------------------------------------------------------------------------
+
+  - job_name: app-backend
+    static_configs:
+      - targets: [app-backend:8400]
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # Feedback + MLOps (Production Completion)
+  # ---------------------------------------------------------------------------
+
+  - job_name: feedback-service
+    static_configs:
+      - targets: [feedback-service:9110]
+    metrics_path: /metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: feedback_.*
+        action: keep
+
+  - job_name: mlops-service
+    static_configs:
+      - targets: [mlops-service:9111]
+    metrics_path: /metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: mlops_.*
+        action: keep
+
+  - job_name: webhook-adapter
+    static_configs:
+      - targets: [webhook-adapter:8600]
+    metrics_path: /metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: adapter_.*
+        action: keep
+
+  # ---------------------------------------------------------------------------
+  # Infrastructure Services
+  # ---------------------------------------------------------------------------
+
+  - job_name: redpanda
+    static_configs:
+      - targets: [redpanda:9644]
+    metrics_path: /metrics
+
+  - job_name: redis
+    static_configs:
+      - targets: [redis:9121]   # redis_exporter sidecar (if deployed)
+    metrics_path: /metrics
+
+  - job_name: postgres
+    static_configs:
+      - targets: [postgres:9187]  # postgres_exporter sidecar (if deployed)
+    metrics_path: /metrics
+
+  - job_name: clickhouse
+    static_configs:
+      - targets: [clickhouse:9363]
+    metrics_path: /metrics
+
+  - job_name: minio
+    static_configs:
+      - targets: [minio:9000]
+    metrics_path: /minio/v2/metrics/cluster
+
+  - job_name: neo4j
+    static_configs:
+      - targets: [neo4j:2004]
+    metrics_path: /metrics
+
+  # ---------------------------------------------------------------------------
+  # MLflow + Airflow
+  # ---------------------------------------------------------------------------
+
+  - job_name: mlflow
+    static_configs:
+      - targets: [mlflow:5000]
+    metrics_path: /metrics
+
+  - job_name: airflow
+    static_configs:
+      - targets: [airflow-webserver:8080]
+    metrics_path: /admin/metrics
+
+  # ---------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # ---------------------------------------------------------------------------
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]

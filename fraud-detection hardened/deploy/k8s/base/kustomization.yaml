@@ -1,0 +1,47 @@
+# deploy/k8s/base/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fraud-detection
+
+resources:
+  - namespace.yaml
+  - api-gateway/deployment.yaml
+  - api-gateway/service.yaml
+  - app-backend/deployment.yaml
+  - app-backend/service.yaml
+  - frontend/deployment.yaml
+  - frontend/service.yaml
+  - stage1-service/deployment.yaml
+  - stage1-service/service.yaml
+  - stage2-service/deployment.yaml
+  - stage2-service/service.yaml
+  - stage3-service/deployment.yaml
+  - stage3-service/service.yaml
+  - feedback-service/deployment.yaml
+  - feedback-service/service.yaml
+  - mlops-service/deployment.yaml
+  - mlops-service/service.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: fraud-detection
+  app.kubernetes.io/managed-by: kustomize
+
+# All images — override tags per overlay
+images:
+  - name: fraud-api-gateway
+    newTag: latest
+  - name: fraud-app-backend
+    newTag: latest
+  - name: fraud-frontend
+    newTag: latest
+  - name: fraud-stage1
+    newTag: latest
+  - name: fraud-stage2
+    newTag: latest
+  - name: fraud-stage3
+    newTag: latest
+  - name: fraud-feedback-service
+    newTag: latest
+  - name: fraud-mlops-service
+    newTag: latest

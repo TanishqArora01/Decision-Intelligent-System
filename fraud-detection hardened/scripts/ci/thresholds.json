@@ -1,0 +1,39 @@
+{
+  "_comment": "Release gate thresholds for load tests. Adjust per environment.",
+
+  "environments": {
+    "ci": {
+      "_comment": "CI environment — relaxed, runs against docker-compose on GitHub runners",
+      "target_tps":        50,
+      "duration_seconds":  30,
+      "p95_latency_ms":   2000,
+      "p99_latency_ms":   5000,
+      "error_rate_pct":    2.0,
+      "min_actual_tps":    20
+    },
+    "staging": {
+      "_comment": "Staging — closer to production hardware, stricter thresholds",
+      "target_tps":       200,
+      "duration_seconds":  60,
+      "p95_latency_ms":   500,
+      "p99_latency_ms":  1000,
+      "error_rate_pct":    1.0,
+      "min_actual_tps":   150
+    },
+    "production": {
+      "_comment": "Production — matches SLO targets in docs/runbooks/slo_sla.md",
+      "target_tps":       500,
+      "duration_seconds": 120,
+      "p95_latency_ms":   200,
+      "p99_latency_ms":  1000,
+      "error_rate_pct":    0.5,
+      "min_actual_tps":   400
+    }
+  },
+
+  "integration_test": {
+    "required_suites":   ["contracts", "fallback"],
+    "optional_suites":   ["gateway", "app", "webhook", "feedback", "mlops"],
+    "fail_on_optional":  false
+  }
+}

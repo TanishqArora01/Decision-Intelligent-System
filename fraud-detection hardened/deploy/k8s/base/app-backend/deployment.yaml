@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-backend
+  labels:
+    app: app-backend
+    app.kubernetes.io/name: app-backend
+    app.kubernetes.io/component: application
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: app-backend
+    spec:
+      serviceAccountName: fraud-detection-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1008
+      containers:
+        - name: app-backend
+          image: fraud-app-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8400
+              name: http
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8400"
+            - name: DEBUG
+              value: "false"
+            - name: POSTGRES_HOST
+              value: postgres
+            - name: CLICKHOUSE_HOST
+              value: clickhouse
+            - name: GATEWAY_URL
+              value: http://api-gateway:8000
+            - name: CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: fraud-config
+                  key: cors_origins
+            # Secrets from Vault via sidecar or CSI driver
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-app-secrets
+                  key: jwt_secret
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fraud-db-secrets
+                  key: postgres_password
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8400
+            initialDelaySeconds: 20
+            periodSeconds:       10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8400
+            initialDelaySeconds: 15
+            periodSeconds:       5
+          resources:
+            requests:
+              cpu:    250m
+              memory: 256Mi
+            limits:
+              cpu:    "2"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem:   false   # needs to write temp files
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-backend
+  labels:
+    app: app-backend
+spec:
+  selector:
+    app: app-backend
+  ports:
+    - name: http
+      port: 8400
+      targetPort: 8400
+  type: ClusterIP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-backend-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: app-backend

@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    librdkafka-dev gcc && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir \
+    confluent-kafka==2.3.0 \
+    prometheus-client==0.20.0
+COPY . .
+RUN useradd -r -u 1015 iso8583svc
+USER iso8583svc
+EXPOSE 9600
+ENTRYPOINT ["python", "iso8583/adapter.py"]

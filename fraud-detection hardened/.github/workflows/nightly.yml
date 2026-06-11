@@ -1,0 +1,116 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 1 * * *"   # 01:00 UTC nightly
+  workflow_dispatch:
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Nightly security deep scan
+  # ──────────────────────────────────────────────────────────────────────────
+  security-deep:
+    name: Security Deep Scan
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install all security tools
+        run: pip install bandit==1.7.9 pip-audit==2.7.3 semgrep==1.71.0
+
+      - name: Full security scan
+        run: |
+          mkdir -p .security-reports
+          SECURITY_REPORT_DIR=.security-reports bash scripts/ci/security_scan.sh
+
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-security-reports-${{ github.run_number }}
+          path: .security-reports/
+          retention-days: 90
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Nightly full integration test (all suites)
+  # ──────────────────────────────────────────────────────────────────────────
+  integration-full:
+    name: Full Integration Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install numpy==1.26.4 pydantic==2.7.1
+
+      - name: Run all offline suites
+        run: |
+          for suite in contracts fallback; do
+            echo "Running suite: $suite"
+            python3 scripts/integration_test.py --suite "$suite"
+          done
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Compose structure drift check — ensure all new services have required fields
+  # ──────────────────────────────────────────────────────────────────────────
+  compose-drift:
+    name: Compose Drift Check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyYAML
+        run: pip install pyyaml==6.0.1
+
+      - name: Check compose for drift
+        run: bash scripts/ci/compose_validate.sh
+
+      - name: Report service count
+        run: |
+          python3 -c "
+          import yaml
+          with open('docker-compose.yml') as f:
+              d = yaml.safe_load(f)
+          svcs = d.get('services', {})
+          print(f'Services: {len(svcs)}')
+          for name in sorted(svcs.keys()):
+              profiles = svcs[name].get('profiles', [])
+              print(f'  {name}: profiles={profiles}')
+          "
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Notify on failure
+  # ──────────────────────────────────────────────────────────────────────────
+  notify:
+    name: Notify on failure
+    runs-on: ubuntu-22.04
+    needs: [security-deep, integration-full, compose-drift]
+    if: failure()
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `Nightly scan failed — ${new Date().toISOString().split('T')[0]}`;
+            const body = `The nightly CI scan failed.\n\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate.`;
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              title,
+              body,
+              labels: ['ci-failure', 'nightly'],
+            });

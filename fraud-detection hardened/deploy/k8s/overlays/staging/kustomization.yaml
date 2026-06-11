@@ -1,0 +1,92 @@
+# deploy/k8s/overlays/staging/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fraud-detection-staging
+
+resources:
+  - ../../base
+
+nameSuffix: -staging
+
+commonLabels:
+  environment: staging
+
+# Staging image tags — pin to a specific SHA or semver tag
+images:
+  - name: fraud-api-gateway
+    newTag: "staging"
+  - name: fraud-app-backend
+    newTag: "staging"
+  - name: fraud-frontend
+    newTag: "staging"
+  - name: fraud-stage1
+    newTag: "staging"
+  - name: fraud-stage2
+    newTag: "staging"
+  - name: fraud-stage3
+    newTag: "staging"
+  - name: fraud-feedback-service
+    newTag: "staging"
+  - name: fraud-mlops-service
+    newTag: "staging"
+
+# Staging-specific patches
+patches:
+  # Reduce replicas for staging
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api-gateway
+      spec:
+        replicas: 1
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: app-backend
+      spec:
+        replicas: 1
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+      spec:
+        replicas: 1
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stage1-service
+      spec:
+        replicas: 1
+
+# Staging ConfigMap
+configMapGenerator:
+  - name: fraud-config
+    literals:
+      - cors_origins=https://portal.staging.example.com
+      - api_url=https://api.staging.example.com
+      - environment=staging
+
+# Staging resource limits (lower than production)
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: stage2-service
+      spec:
+        template:
+          spec:
+            containers:
+              - name: stage2-service
+                resources:
+                  limits:
+                    cpu: "4"
+                    memory: 8Gi
+                  requests:
+                    cpu: 500m
+                    memory: 4Gi

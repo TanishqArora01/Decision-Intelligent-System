@@ -1,0 +1,703 @@
+﻿---
+# =============================================================================
+# Fraud Detection â€” Decision Intelligence System
+# Docker Compose v2 â€” Single-Machine Microservices Architecture
+# Machine target: 32GB RAM | Profiles: core â†’ data â†’ compute â†’ monitoring
+# =============================================================================
+# Startup order:
+#   make up-core        â†’ Redpanda, Redis, PostgreSQL
+#   make up-data        â†’ ClickHouse, MinIO, Neo4j
+#   make up-compute     â†’ Flink, MLflow
+#   make up-orchestrate â†’ Airflow
+#   make up-monitoring  â†’ Prometheus, Grafana
+#   make up-all         â†’ everything at once
+# =============================================================================
+
+networks:
+  fraud_net:
+    name: fraud_net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  redpanda_data:
+    name: fraud_redpanda_data
+  redis_data:
+    name: fraud_redis_data
+  postgres_data:
+    name: fraud_postgres_data
+  clickhouse_data:
+    name: fraud_clickhouse_data
+  minio_data:
+    name: fraud_minio_data
+  neo4j_data:
+    name: fraud_neo4j_data
+  neo4j_logs:
+    name: fraud_neo4j_logs
+  neo4j_plugins:
+    name: fraud_neo4j_plugins
+  mlflow_data:
+    name: fraud_mlflow_data
+  airflow_logs:
+    name: fraud_airflow_logs
+  airflow_plugins:
+    name: fraud_airflow_plugins
+  prometheus_data:
+    name: fraud_prometheus_data
+  grafana_data:
+    name: fraud_grafana_data
+  flink_data:
+    name: fraud_flink_data
+
+services:
+
+  # ===========================================================================
+  # CORE LAYER â€” Profile: core
+  # Services: Redpanda (Kafka), Redis (Online Feature Store), PostgreSQL
+  # RAM budget: ~4GB
+  # Start with: make up-core
+  # ===========================================================================
+
+  redpanda:
+    image: redpandadata/redpanda:latest
+    container_name: fraud_redpanda
+    user: "0:0"
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.1.10
+    ports:
+      - "${REDPANDA_KAFKA_PORT:-9092}:9092"       # Kafka API
+      - "${REDPANDA_ADMIN_PORT:-9644}:9644"       # Admin API
+      - "${REDPANDA_SCHEMA_PORT:-8081}:8081"      # Schema Registry
+      - "${REDPANDA_PROXY_PORT:-8082}:8082"       # HTTP Proxy (Pandaproxy)
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:9092
+      - --pandaproxy-addr internal://0.0.0.0:8082
+      - --advertise-pandaproxy-addr internal://redpanda:8082
+      - --schema-registry-addr internal://0.0.0.0:8081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory 1800M
+      - --default-log-level=warn
+    environment:
+      REDPANDA_BROKERS: redpanda:9092
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  redpanda-init:
+    image: redpandadata/redpanda:latest
+    container_name: fraud_redpanda_init
+    profiles: ["core", "full"]
+    networks:
+      - fraud_net
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    volumes:
+      - ./scripts/create_topics.sh:/create_topics.sh:ro
+    entrypoint: ["/bin/bash", "/create_topics.sh"]
+    restart: "no"
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: fraud_redis
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.1.11
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+      - ./config/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: fraud_postgres
+    profiles: ["core", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.1.12
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_postgres.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fraud_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fraud_secret_2024}
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fraud_admin} -d ${POSTGRES_DB:-fraud_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1500M
+        reservations:
+          memory: 512M
+
+  # ===========================================================================
+  # DATA LAYER â€” Profile: data
+  # Services: ClickHouse (Analytics), MinIO (Offline Store), Neo4j (Graph)
+  # RAM budget: ~8GB
+  # Requires: make up-core first
+  # Start with: make up-data
+  # ===========================================================================
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    container_name: fraud_clickhouse
+    profiles: ["data", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.2.10
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"    # HTTP interface
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"  # Native TCP interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./config/clickhouse/users.xml:/etc/clickhouse-server/users.d/users.xml:ro
+      - ./config/clickhouse/config.xml:/etc/clickhouse-server/config.d/config.xml:ro
+      - ./scripts/init_clickhouse.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-fraud_admin}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-fraud_secret_2024}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-fraud_analytics}
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+        reservations:
+          memory: 2G
+
+  minio:
+    image: minio/minio:RELEASE.2024-03-15T01-07-19Z
+    container_name: fraud_minio
+    profiles: ["data", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.2.11
+    ports:
+      - "${MINIO_API_PORT:-9001}:9000"          # S3 API
+      - "${MINIO_CONSOLE_PORT:-9002}:9001"      # Web Console
+    volumes:
+      - minio_data:/data
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-fraud_minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-fraud_minio_2024}
+      MINIO_SITE_NAME: fraud-detection
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-03-13T23-51-57Z
+    container_name: fraud_minio_init
+    profiles: ["data", "full"]
+    networks:
+      - fraud_net
+    depends_on:
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./scripts/init_minio.sh:/init_minio.sh:ro
+    entrypoint: ["/bin/sh", "/init_minio.sh"]
+    restart: "no"
+
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: fraud_neo4j
+    profiles: ["data", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.2.12
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"         # HTTP Browser UI
+      - "${NEO4J_BOLT_PORT:-7687}:7687"         # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+      - ./config/neo4j/neo4j.conf:/conf/neo4j.conf:ro
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-fraud_neo4j_2024}
+      NEO4J_PLUGINS: '["apoc", "graph-data-science"]'
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*,gds.*"
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "2G"
+      NEO4J_server_memory_pagecache__size: "512M"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 20s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+        reservations:
+          memory: 1500M
+
+  # ===========================================================================
+  # COMPUTE LAYER â€” Profile: compute
+  # Services: Flink JobManager, Flink TaskManager, MLflow
+  # RAM budget: ~5.5GB
+  # Requires: make up-core && make up-data first
+  # Start with: make up-compute
+  # ===========================================================================
+
+  flink-jobmanager:
+    image: flink:1.18-scala_2.12-java11
+    container_name: fraud_flink_jobmanager
+    profiles: ["compute", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.3.10
+    ports:
+      - "${FLINK_UI_PORT:-8083}:8081"           # Flink Web UI
+      - "6123:6123"                              # RPC
+    volumes:
+      - flink_data:/opt/flink/data
+      - ./config/flink/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./config/flink/log4j-console.properties:/opt/flink/conf/log4j-console.properties:ro
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1024m
+        taskmanager.memory.process.size: 3072m
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1200M
+        reservations:
+          memory: 768M
+
+  flink-taskmanager:
+    image: flink:1.18-scala_2.12-java11
+    container_name: fraud_flink_taskmanager
+    profiles: ["compute", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.3.11
+    volumes:
+      - flink_data:/opt/flink/data
+      - ./config/flink/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
+      - ./config/flink/log4j-console.properties:/opt/flink/conf/log4j-console.properties:ro
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        jobmanager.memory.process.size: 1024m
+        taskmanager.memory.process.size: 3072m
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://flink-jobmanager:8081/taskmanagers || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3200M
+        reservations:
+          memory: 2G
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    container_name: fraud_mlflow
+    profiles: ["compute", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.3.12
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER:-fraud_admin}:${POSTGRES_PASSWORD:-fraud_secret_2024}@postgres:5432/mlflow_db
+      MLFLOW_ARTIFACT_ROOT: s3://mlflow-artifacts/
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-fraud_minio}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-fraud_minio_2024}
+    command: >
+      mlflow server
+      --backend-store-uri postgresql+psycopg2://${POSTGRES_USER:-fraud_admin}:${POSTGRES_PASSWORD:-fraud_secret_2024}@postgres:5432/mlflow_db
+      --default-artifact-root s3://mlflow-artifacts/
+      --host 0.0.0.0
+      --port 5000
+      --serve-artifacts
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  # ===========================================================================
+  # ORCHESTRATION LAYER â€” Profile: orchestration
+  # Services: Airflow (webserver + scheduler + init)
+  # RAM budget: ~2.5GB
+  # Requires: make up-core && make up-data first
+  # Start with: make up-orchestrate
+  # ===========================================================================
+
+  airflow-init:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: fraud_airflow_init
+    profiles: ["orchestration", "full"]
+    networks:
+      - fraud_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-fraud_admin}:${POSTGRES_PASSWORD:-fraud_secret_2024}@postgres:5432/airflow_db
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-bVz2Jt7oFr1Ky4pqDuEwX9nMsAhLcBgR6iNZW0Qv3Ue8kPj5TdH}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-fraud_airflow_secret_2024}
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_PASSWORD:-fraud_admin_2024}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: version
+    restart: "no"
+
+  airflow-webserver:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: fraud_airflow_webserver
+    profiles: ["orchestration", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.4.10
+    ports:
+      - "${AIRFLOW_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-fraud_admin}:${POSTGRES_PASSWORD:-fraud_secret_2024}@postgres:5432/airflow_db
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-bVz2Jt7oFr1Ky4pqDuEwX9nMsAhLcBgR6iNZW0Qv3Ue8kPj5TdH}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-fraud_airflow_secret_2024}
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: webserver
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1200M
+        reservations:
+          memory: 512M
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.1-python3.11
+    container_name: fraud_airflow_scheduler
+    profiles: ["orchestration", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.4.11
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-fraud_admin}:${POSTGRES_PASSWORD:-fraud_secret_2024}@postgres:5432/airflow_db
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-bVz2Jt7oFr1Ky4pqDuEwX9nMsAhLcBgR6iNZW0Qv3Ue8kPj5TdH}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname $(hostname) || exit 1"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1200M
+        reservations:
+          memory: 512M
+
+  # ===========================================================================
+  # GENERATOR â€” Profile: generator
+  # Synthetic transaction generator â€” publishes to txn-raw topic
+  # All parameters configurable via env vars at runtime
+  # ===========================================================================
+
+  generator:
+    build:
+      context: ./generator
+      dockerfile: Dockerfile
+    image: fraud-generator:latest
+    container_name: fraud_generator
+    profiles: ["generator", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.6.10
+    ports:
+      - "${GENERATOR_METRICS_PORT:-9101}:9101"  # Prometheus /metrics
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      # Kafka
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_TOPIC_RAW: txn-raw
+      KAFKA_BATCH_SIZE: "65536"
+      KAFKA_LINGER_MS: "5"
+      KAFKA_COMPRESSION: lz4
+      KAFKA_ACKS: "1"
+      # Throughput â€” override at runtime: docker compose up -e GENERATOR_TPS=1000
+      GENERATOR_TPS: "${GENERATOR_TPS:-500}"
+      GENERATOR_WORKERS: "${GENERATOR_WORKERS:-4}"
+      GENERATOR_TOTAL_TXNS: "${GENERATOR_TOTAL_TXNS:-0}"
+      # Fraud rates
+      FRAUD_RATE: "${FRAUD_RATE:-0.05}"
+      WEIGHT_CARD_TESTING: "0.20"
+      WEIGHT_ACCOUNT_TAKEOVER: "0.20"
+      WEIGHT_VELOCITY_ATTACK: "0.20"
+      WEIGHT_FRAUD_RING: "0.15"
+      WEIGHT_GEO_IMPOSSIBILITY: "0.15"
+      WEIGHT_LARGE_AMOUNT: "0.10"
+      # Pool sizes
+      NUM_CUSTOMERS: "${NUM_CUSTOMERS:-2000}"
+      NUM_MERCHANTS: "500"
+      NUM_DEVICES: "3000"
+      NUM_IPS: "4000"
+      PREMIUM_CUSTOMER_FRACTION: "0.10"
+      # Ops
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      METRICS_PORT: "9101"
+      STATS_INTERVAL_SEC: "10"
+      RANDOM_SEED: "42"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9101/metrics || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # ===========================================================================
+  # MONITORING LAYER â€” Profile: monitoring
+  # Services: Prometheus, Grafana
+  # RAM budget: ~1GB
+  # Can be started at any time: make up-monitoring
+  # ===========================================================================
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    container_name: fraud_prometheus
+    profiles: ["monitoring", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.5.10
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - prometheus_data:/prometheus
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./config/prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768M
+        reservations:
+          memory: 256M
+
+  grafana:
+    image: grafana/grafana-oss:10.4.2
+    container_name: fraud_grafana
+    profiles: ["monitoring", "full"]
+    restart: unless-stopped
+    networks:
+      fraud_net:
+        ipv4_address: 172.28.5.11
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-fraud_grafana_2024}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+      GF_SERVER_ROOT_URL: http://localhost:${GRAFANA_PORT:-3000}
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+
+
+

@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stage1-service
+  labels:
+    app: stage1-service
+    app.kubernetes.io/component: ml-pipeline
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: stage1-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: stage1-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "9103"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser:    1001
+      containers:
+        - name: stage1-service
+          image: fraud-stage1:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8100
+              name: http
+            - containerPort: 9103
+              name: metrics
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: redpanda:9092
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow:5000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8100
+            initialDelaySeconds: 90    # allow model training on first start
+            periodSeconds:       15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8100
+            initialDelaySeconds: 90
+            periodSeconds:       10
+          resources:
+            requests:
+              cpu:    500m
+              memory: 2Gi
+            limits:
+              cpu:    "4"
+              memory: 8Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stage1-service
+spec:
+  selector:
+    app: stage1-service
+  ports:
+    - name: http
+      port: 8100
+      targetPort: 8100
+    - name: metrics
+      port: 9103
+      targetPort: 9103
+  type: ClusterIP
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: stage1-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: stage1-service

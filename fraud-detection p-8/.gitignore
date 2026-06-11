@@ -1,0 +1,64 @@
+# =============================================================================
+# .gitignore — Fraud Detection System
+# =============================================================================
+
+# Environment — NEVER commit real credentials
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+*.egg
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Models & artifacts (stored in MinIO/MLflow, not git)
+models/
+*.pkl
+*.joblib
+*.pt
+*.onnx
+
+# Data files
+data/
+*.parquet
+*.csv
+*.json.gz
+
+# Docker volumes (managed by Docker, not git)
+volumes/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Airflow
+airflow.cfg
+airflow.db
+airflow-webserver.pid
+standalone_admin_password.txt
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Flink
+flink-*.log
+flink-*.out

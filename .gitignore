@@ -1,0 +1,67 @@
+# ============================================================
+# Decision Intelligent System — .gitignore
+# ============================================================
+
+# ------ Node / npm ------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json   # keep if you want deterministic installs; remove this line if so
+
+# ------ Python ------
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ------ Next.js / Frontend ------
+.next/
+out/
+*.tsbuildinfo
+.vercel/
+
+# ------ Environment & secrets ------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# ------ IDE & OS ------
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ------ Logs ------
+logs/
+*.log
+
+# ------ Docker ------
+*.dockerfile.local
+
+# ------ Build artifacts ------
+coverage/
+*.lcov
+
+# ------ Misc ------
+*.bak
+*.tmp

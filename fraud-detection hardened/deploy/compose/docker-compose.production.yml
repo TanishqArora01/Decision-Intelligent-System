@@ -1,0 +1,259 @@
+# deploy/compose/docker-compose.production.yml
+# Production environment overrides.
+# Usage:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f deploy/compose/docker-compose.production.yml \
+#     up -d
+#
+# Differences from base:
+#   - Maximum resource limits
+#   - No generator service
+#   - No Vault dev mode (use external Vault cluster)
+#   - Strict logging with rotation
+#   - Redis auth enforced
+#   - PostgreSQL hardened config
+
+version: "3.9"
+
+x-prod-logging: &prod-logging
+  driver: "json-file"
+  options:
+    max-size: "100m"
+    max-file: "10"
+
+x-prod-restart: &prod-restart
+  restart: always
+
+services:
+
+  # ── Disabled in production ────────────────────────────────────────────────
+  generator:
+    profiles: []   # Never run synthetic generator in production
+
+  vault:
+    profiles: []   # Use external Vault cluster in production
+
+  # ── API Gateway ───────────────────────────────────────────────────────────
+  api-gateway:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      LOG_LEVEL: WARNING
+      UVICORN_WORKERS: "4"
+      TIMEOUT_STAGE1: "0.012"
+      TIMEOUT_STAGE2: "0.120"
+      TIMEOUT_STAGE3: "0.030"
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # ── ML Stages ─────────────────────────────────────────────────────────────
+  stage1-service:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 8G
+        reservations:
+          memory: 4G
+
+  stage2-service:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 16G
+        reservations:
+          memory: 8G
+
+  stage3-service:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+
+  # ── Application Layer ──────────────────────────────────────────────────────
+  app-backend:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      DEBUG: "false"
+      LOG_LEVEL: WARNING
+      CORS_ORIGINS: "${CORS_ORIGINS}"       # injected — no wildcard
+      JWT_EXPIRE_MINUTES: "30"              # shorter token lifetime in prod
+      JWT_REFRESH_EXPIRE_MINUTES: "1440"    # 24h refresh
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  frontend:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL:  "${PROD_API_URL}"
+      BACKEND_INTERNAL_URL: http://app-backend:8400
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  # ── Feedback + MLOps ──────────────────────────────────────────────────────
+  feedback-service:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      RETRAIN_LABEL_THRESHOLD: "${RETRAIN_LABEL_THRESHOLD:-500}"
+      TRUST_DECAY_FN: "0.10"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  mlops-service:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  # ── Transaction Adapters ───────────────────────────────────────────────────
+  webhook-adapter:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+
+  # ── Infrastructure ─────────────────────────────────────────────────────────
+  postgres:
+    <<: *prod-restart
+    logging: *prod-logging
+    command: >
+      postgres
+      -c max_connections=500
+      -c shared_buffers=2GB
+      -c effective_cache_size=6GB
+      -c work_mem=16MB
+      -c maintenance_work_mem=512MB
+      -c wal_level=replica
+      -c archive_mode=on
+      -c log_statement=ddl
+      -c log_min_duration_statement=500
+      -c log_connections=on
+      -c log_disconnections=on
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 16G
+        reservations:
+          memory: 8G
+
+  clickhouse:
+    <<: *prod-restart
+    logging: *prod-logging
+    deploy:
+      resources:
+        limits:
+          cpus: "8.0"
+          memory: 32G
+        reservations:
+          memory: 16G
+
+  redis:
+    <<: *prod-restart
+    logging: *prod-logging
+    command: >
+      redis-server
+      --requirepass "${REDIS_PASSWORD}"
+      --maxmemory 4gb
+      --maxmemory-policy allkeys-lru
+      --save 900 1
+      --save 300 10
+      --appendonly yes
+      --appendfsync everysec
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 6G
+        reservations:
+          memory: 4G
+
+  neo4j:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      NEO4J_dbms_memory_heap_initial__size: "2G"
+      NEO4J_dbms_memory_heap_maxSize: "8G"
+      NEO4J_dbms_memory_pagecache_size: "4G"
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 16G
+        reservations:
+          memory: 8G
+
+  nginx:
+    <<: *prod-restart
+    logging: *prod-logging
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+      - ./security/certbot/nginx-certbot.conf:/etc/nginx/nginx.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 256M
+
+  decision-sink:
+    <<: *prod-restart
+    logging: *prod-logging
+    environment:
+      SINK_BATCH_SIZE: "200"
+      SINK_BATCH_TIMEOUT: "1.0"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+
+  prometheus:
+    <<: *prod-restart
+    logging: *prod-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=90d"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G

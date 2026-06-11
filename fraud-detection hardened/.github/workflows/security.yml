@@ -1,0 +1,155 @@
+name: Security
+
+on:
+  push:
+    branches: [main, develop, staging]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Run nightly at 02:00 UTC even without new pushes
+    - cron: "0 2 * * *"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # Bandit — Python SAST
+  # ──────────────────────────────────────────────────────────────────────────
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bandit
+        run: pip install bandit==1.7.9
+
+      - name: Run bandit
+        run: |
+          bandit -r \
+            app-backend stage1-service stage2-service stage3-service \
+            feature-engine feedback-service mlops-service \
+            transaction-adapters sinks dataset-pipeline vault \
+            --skip B101,B105,B601 \
+            --severity-level medium \
+            --format sarif \
+            -o bandit-results.sarif || true
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit
+        continue-on-error: true  # SARIF upload requires Advanced Security
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Semgrep — cross-language SAST
+  # ──────────────────────────────────────────────────────────────────────────
+  semgrep:
+    name: Semgrep (SAST)
+    runs-on: ubuntu-22.04
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config "p/python" \
+            --config "p/secrets" \
+            --config "p/jwt" \
+            --config "p/sql-injection" \
+            --config "p/owasp-top-ten" \
+            --exclude "node_modules,__pycache__,.next,.git" \
+            --sarif \
+            --output semgrep-results.sarif \
+            . || true
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # pip-audit — dependency CVE scanning
+  # ──────────────────────────────────────────────────────────────────────────
+  pip-audit:
+    name: pip-audit (CVEs)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+
+      - name: Audit all requirements files
+        run: |
+          FAILED=0
+          for req in $(find . -name "requirements*.txt" \
+                       ! -path "*/node_modules/*" ! -path "*/.git/*"); do
+            echo "Auditing: $req"
+            if ! pip-audit --requirement "$req" --no-deps --skip-editable; then
+              FAILED=$((FAILED+1))
+            fi
+          done
+          if [[ $FAILED -gt 0 ]]; then
+            echo "✗ $FAILED requirements file(s) have vulnerable dependencies"
+            exit 1
+          fi
+          echo "✓ All dependencies clean"
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Trivy — filesystem + container image scanning
+  # ──────────────────────────────────────────────────────────────────────────
+  trivy:
+    name: Trivy (filesystem)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          format: sarif
+          output: trivy-results.sarif
+          skip-dirs: ".git,node_modules,__pycache__,.next"
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Secret detection — gitleaks
+  # ──────────────────────────────────────────────────────────────────────────
+  gitleaks:
+    name: Gitleaks (secret detection)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for git-history scanning
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}  # optional

@@ -1,0 +1,276 @@
+groups:
+
+  # ===========================================================================
+  # GROUP 1 — Service Availability SLOs (target: 99.9% uptime)
+  # ===========================================================================
+  - name: service_availability
+    interval: 30s
+    rules:
+
+      - alert: GatewayDown
+        expr: up{job="api-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "API Gateway is DOWN"
+          description: "API Gateway unreachable > 1m. All fraud scoring unavailable."
+          runbook: "docs/runbooks/incident_response.md#gateway-down"
+
+      - alert: Stage1Down
+        expr: up{job="stage1-fast-risk"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Stage 1 (LightGBM) is DOWN"
+          description: "Stage 1 unreachable. Pipeline degraded to Stage 2+ only."
+
+      - alert: Stage2Down
+        expr: up{job="stage2-deep-intel"} == 0
+        for: 2m
+        labels:
+          severity: high
+          slo: availability
+        annotations:
+          summary: "Stage 2 (Deep Intelligence) is DOWN"
+          description: "Stage 2 unreachable. Decisions falling back to Stage 1 scores only."
+
+      - alert: Stage3Down
+        expr: up{job="stage3-decision-engine"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "Stage 3 (Decision Engine) is DOWN"
+          description: "All decisions defaulting to MANUAL_REVIEW."
+
+      - alert: AppBackendDown
+        expr: up{job="app-backend"} == 0
+        for: 2m
+        labels:
+          severity: high
+          slo: availability
+        annotations:
+          summary: "App Backend (BFF) is DOWN"
+          description: "Application portal unavailable. Analysts cannot access review queue."
+
+      - alert: DecisionSinkLagging
+        expr: kafka_consumergroup_lag{topic="decisions"} > 1000
+        for: 5m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "Decision sink Kafka consumer lag > 1000"
+          description: "Decisions not reaching PostgreSQL/ClickHouse in time."
+
+  # ===========================================================================
+  # GROUP 2 — Latency SLOs
+  # Stage 1 early exit p99 < 15ms
+  # Full pipeline p95 < 200ms, p99 < 1000ms
+  # ===========================================================================
+  - name: latency_slos
+    interval: 30s
+    rules:
+
+      - alert: GatewayLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(gateway_e2e_latency_ms_bucket[5m])) by (le)
+          ) > 200
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Gateway p95 latency > 200ms SLO"
+          description: "p95={{ $value | humanize }}ms (SLO: 200ms). Check Neo4j and ensemble latency."
+
+      - alert: GatewayLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(gateway_e2e_latency_ms_bucket[5m])) by (le)
+          ) > 1000
+        for: 5m
+        labels:
+          severity: high
+          slo: latency
+        annotations:
+          summary: "Gateway p99 latency > 1000ms SLO"
+          description: "p99={{ $value | humanize }}ms. Likely Neo4j or PostgreSQL timeout."
+
+      - alert: Stage1LatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(stage1_latency_ms_bucket[5m])) by (le)
+          ) > 15
+        for: 5m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "Stage 1 p99 > 15ms early-exit SLO"
+          description: "LightGBM p99={{ $value | humanize }}ms."
+
+      - alert: ThroughputDrop
+        expr: sum(rate(gateway_txn_total[1m])) < 10
+        for: 3m
+        labels:
+          severity: warning
+          slo: throughput
+        annotations:
+          summary: "Gateway throughput < 10 TPS"
+          description: "Rate={{ $value | humanize }} TPS. Expected 100+ TPS baseline."
+
+  # ===========================================================================
+  # GROUP 3 — Fraud Detection Quality SLOs
+  # ===========================================================================
+  - name: fraud_quality
+    interval: 60s
+    rules:
+
+      - alert: BlockRateTooHigh
+        expr: |
+          (
+            sum(rate(stage3_decisions_total{action="BLOCK"}[15m]))
+            / sum(rate(stage3_decisions_total[15m]))
+          ) > 0.15
+        for: 10m
+        labels:
+          severity: warning
+          slo: fraud_quality
+        annotations:
+          summary: "Block rate > 15% — possible attack wave or model miscalibration"
+          description: "Block rate={{ $value | humanizePercentage }}. Normal: 2–8%."
+
+      - alert: BlockRateTooLow
+        expr: |
+          (
+            sum(rate(stage3_decisions_total{action="BLOCK"}[30m]))
+            / sum(rate(stage3_decisions_total[30m]))
+          ) < 0.005
+        for: 15m
+        labels:
+          severity: warning
+          slo: fraud_quality
+        annotations:
+          summary: "Block rate < 0.5% — model may have degraded"
+          description: "Block rate={{ $value | humanizePercentage }}. Check model AUC and thresholds."
+
+      - alert: ManualReviewBacklog
+        expr: stage3_decisions_total{action="MANUAL_REVIEW"} - review_cases_resolved_total > 500
+        for: 30m
+        labels:
+          severity: warning
+          slo: fraud_quality
+        annotations:
+          summary: "Review queue backlog > 500 cases"
+          description: "Unresolved MANUAL_REVIEW cases > 500. Analyst capacity may be insufficient."
+
+      - alert: ModelDriftDetected
+        expr: fraud_feature_psi_max > 0.25
+        for: 0m
+        labels:
+          severity: high
+          slo: model_quality
+        annotations:
+          summary: "Significant feature drift (PSI > 0.25)"
+          description: "Max PSI={{ $value | humanize }}. Retraining DAG should auto-trigger."
+
+      - alert: ModelAUCDegraded
+        expr: mlflow_model_val_auc{stage="Production"} < 0.90
+        for: 0m
+        labels:
+          severity: high
+          slo: model_quality
+        annotations:
+          summary: "Production model AUC < 0.90 SLO"
+          description: "{{ $labels.model_name }} AUC={{ $value | humanize }}. Consider rollback."
+
+  # ===========================================================================
+  # GROUP 4 — Infrastructure Health
+  # ===========================================================================
+  - name: infrastructure
+    interval: 60s
+    rules:
+
+      - alert: PostgreSQLDown
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL is DOWN"
+          description: "Audit trail and review queue writes failing."
+
+      - alert: ClickHouseDown
+        expr: up{job="clickhouse"} == 0
+        for: 2m
+        labels:
+          severity: high
+        annotations:
+          summary: "ClickHouse is DOWN"
+          description: "Analytics dashboards stale. Decision sink writes failing."
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is DOWN"
+          description: "Feature velocity/behavioral features unavailable. Cold-start defaults active."
+
+      - alert: MinIODiskUsageHigh
+        expr: minio_cluster_disk_used_bytes / minio_cluster_disk_total_bytes > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MinIO disk > 85% full"
+          description: "Run: make cleanup-old-snapshots"
+
+      - alert: ContainerMemoryHigh
+        expr: |
+          container_memory_usage_bytes{name=~"fraud_.*"}
+          / container_spec_memory_limit_bytes{name=~"fraud_.*"} > 0.90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} memory > 90% of limit"
+          description: "OOM kill risk. Increase memory limit or reduce model batch size."
+
+  # ===========================================================================
+  # GROUP 5 — Security Alerts
+  # ===========================================================================
+  - name: security
+    interval: 30s
+    rules:
+
+      - alert: AuthFailureSpike
+        expr: |
+          sum(rate(http_requests_total{
+            handler="/auth/login", status=~"401|403"
+          }[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Auth failures > 10/min — possible brute force"
+          description: "Rate={{ $value | humanize }}/sec on /auth/login. Nginx rate limit is 5 req/s."
+
+      - alert: UnusualAPIKeyCreation
+        expr: increase(api_keys_created_total[1h]) > 20
+        for: 0m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "Unusual API key creation rate (> 20/hour)"
+          description: "Possible automated key generation. Review audit.events."
