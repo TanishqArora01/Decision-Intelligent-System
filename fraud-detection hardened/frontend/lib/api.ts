@@ -1,7 +1,7 @@
 // lib/api.ts — JWT auth, token refresh, SSE via Authorization header (not query param)
 const BASE = typeof window !== 'undefined'
-  ? (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8400')
-  : (process.env.BACKEND_INTERNAL_URL ?? 'http://app-backend:8400');
+  ? (process.env.NEXT_PUBLIC_API_URL ?? '/api')
+  : (process.env.BACKEND_INTERNAL_URL ?? '/api');
 
 function getTokens() {
   if (typeof window === 'undefined') return { access: null, refresh: null };

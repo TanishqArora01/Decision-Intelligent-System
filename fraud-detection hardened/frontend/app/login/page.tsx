@@ -1,5 +1,5 @@
 'use client';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Shield, AlertCircle, Loader2 } from 'lucide-react';
 import { api } from '../../lib/api';
@@ -11,7 +11,7 @@ const DEMO = [
   { label: 'Bank Partner', u: 'partner1', p: 'partner2024!' },
 ];
 
-export default function LoginPage() {
+function LoginForm() {
   const router  = useRouter();
   const params  = useSearchParams();
   const [username, setUsername] = useState('');
@@ -90,5 +90,17 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-950 to-gray-900 flex items-center justify-center p-4">
+        <Loader2 className="w-8 h-8 text-white animate-spin" />
+      </div>
+    }>
+      <LoginForm />
+    </Suspense>
   );
 }

@@ -66,3 +66,6 @@ coverage/
 *.bak
 *.tmp
 node_modules
+
+# Local Netlify folder
+.netlify
