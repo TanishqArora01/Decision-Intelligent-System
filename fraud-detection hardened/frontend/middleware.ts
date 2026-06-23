@@ -1,7 +1,7 @@
 // frontend/middleware.ts — Next.js edge middleware: server-side route protection
 import { NextRequest, NextResponse } from 'next/server';
 
-const PUBLIC_PATHS = new Set(['/login', '/favicon.ico']);
+const PUBLIC_PATHS = new Set(['/login', '/favicon.ico', '/']);
 
 function isPublicAsset(pathname: string): boolean {
   return pathname.startsWith('/_next/') ||
@@ -14,6 +14,17 @@ function isPublicAsset(pathname: string): boolean {
 
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
+  
+  // Handle root path explicitly
+  if (pathname === '/') {
+    const token = request.cookies.get('access_token')?.value;
+    if (token) {
+      return NextResponse.redirect(new URL('/dashboard', request.url));
+    } else {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
+  }
+  
   if (isPublicAsset(pathname)) return NextResponse.next();
   const token    = request.cookies.get('access_token')?.value;
   const isPublic = PUBLIC_PATHS.has(pathname);
