@@ -15,27 +15,9 @@ function isPublicAsset(pathname: string): boolean {
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
   
-  // Handle root path explicitly
-  if (pathname === '/') {
-    const token = request.cookies.get('access_token')?.value;
-    if (token) {
-      return NextResponse.redirect(new URL('/dashboard', request.url));
-    } else {
-      return NextResponse.redirect(new URL('/login', request.url));
-    }
-  }
-  
+  // Skip middleware for now to debug 404 error
   if (isPublicAsset(pathname)) return NextResponse.next();
-  const token    = request.cookies.get('access_token')?.value;
-  const isPublic = PUBLIC_PATHS.has(pathname);
-  if (!token && !isPublic) {
-    const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('redirect', pathname);
-    return NextResponse.redirect(loginUrl);
-  }
-  if (token && pathname === '/login') {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  }
+  
   return NextResponse.next();
 }
 
