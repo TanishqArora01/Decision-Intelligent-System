@@ -15,8 +15,20 @@ function isPublicAsset(pathname: string): boolean {
 export function middleware(request: NextRequest): NextResponse {
   const { pathname } = request.nextUrl;
   
-  // Skip middleware for now to debug 404 error
+  // Allow public assets and public paths
   if (isPublicAsset(pathname)) return NextResponse.next();
+  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
+  
+  // Check for authentication token
+  const token = request.cookies.get('access_token')?.value || 
+                request.headers.get('authorization')?.replace('Bearer ', '');
+  
+  // If no token and trying to access protected route, redirect to login
+  if (!token) {
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('redirect', pathname);
+    return NextResponse.redirect(loginUrl);
+  }
   
   return NextResponse.next();
 }

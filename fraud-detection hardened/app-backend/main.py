@@ -1,9 +1,13 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
 import random
+import os
+import jwt
+from jwt import PyJWTError
 
 app = FastAPI(title="Decision Intelligence API", version="1.0.0")
 
@@ -16,7 +20,83 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Authentication configuration
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production-demo-only")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+
+# Demo users (hardcoded for demo purposes - plain text for simplicity)
+DEMO_USERS = {
+    "admin": {"username": "admin", "password": "admin2024!", "role": "ADMIN", "id": "1"},
+    "analyst1": {"username": "analyst1", "password": "analyst2024!", "role": "ANALYST", "id": "2"},
+    "ops1": {"username": "ops1", "password": "ops2024!", "role": "OPS_MANAGER", "id": "3"},
+    "partner1": {"username": "partner1", "password": "partner2024!", "role": "BANK_PARTNER", "id": "4"},
+}
+
+def verify_password(plain_password: str, stored_password: str) -> bool:
+    # Plain text comparison for demo purposes
+    return plain_password == stored_password
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+def create_refresh_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except PyJWTError:
+        raise credentials_exception
+    
+    user = DEMO_USERS.get(username)
+    if user is None:
+        raise credentials_exception
+    return user
+
 # Models
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    role: str
+    username: str
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    role: str
+    org_id: Optional[str] = None
+
 class Transaction(BaseModel):
     id: str
     amount: float
@@ -113,6 +193,73 @@ def generate_top_risk() -> List[TopRiskData]:
         )
         for i in range(5)
     ]
+
+# Authentication endpoints
+@app.post("/auth/login")
+async def login(request: LoginRequest):
+    user = DEMO_USERS.get(request.username)
+    if not user or not verify_password(request.password, user["password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password"
+        )
+    
+    access_token = create_access_token(data={"sub": user["username"]})
+    refresh_token = create_refresh_token(data={"sub": user["username"]})
+    
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        role=user["role"],
+        username=user["username"]
+    )
+
+@app.post("/auth/refresh")
+async def refresh(request: RefreshRequest):
+    try:
+        payload = jwt.decode(request.refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        username = payload.get("sub")
+        if not username:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid refresh token"
+            )
+        
+        user = DEMO_USERS.get(username)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found"
+            )
+        
+        access_token = create_access_token(data={"sub": user["username"]})
+        new_refresh_token = create_refresh_token(data={"sub": user["username"]})
+        
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            role=user["role"],
+            username=user["username"]
+        )
+    except PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+@app.get("/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    return UserResponse(
+        id=current_user["id"],
+        username=current_user["username"],
+        role=current_user["role"],
+        org_id=None
+    )
 
 # Endpoints
 @app.get("/")

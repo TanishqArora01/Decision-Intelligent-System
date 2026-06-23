@@ -1,6 +1,6 @@
-// Root page — redirects to /dashboard (handled by middleware, this is a fallback)
+// Root page — redirects to /login (middleware will handle auth check for protected routes)
 import { redirect } from 'next/navigation';
 
 export default function RootPage() {
-  redirect('/dashboard');
+  redirect('/login');
 }
