@@ -1,7 +1,7 @@
 // lib/api.ts — JWT auth, token refresh, SSE via Authorization header (not query param)
 const BASE = typeof window !== 'undefined'
-  ? (process.env.NEXT_PUBLIC_API_URL ?? '/api')
-  : (process.env.BACKEND_INTERNAL_URL ?? '/api');
+  ? (process.env.NEXT_PUBLIC_API_URL ?? 'https://decision-intelligence-api.onrender.com')
+  : (process.env.BACKEND_INTERNAL_URL ?? 'https://decision-intelligence-api.onrender.com');
 
 function getTokens() {
   if (typeof window === 'undefined') return { access: null, refresh: null };
